@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""
-Ransomware.live CLI Client with Enhanced Features.
-
-Features:
-  • Search victims by keyword
-  • List victims by date, by country, or by country+date
-  • Search victims by ransomware group
-  • List all known groups and fetch group details (including onion links)
-  • Advanced filters on victim records (press coverage, infostealer, updates)
-  • Rate-limit handling with exponential backoff & Retry-After header
-  • Local caching in SQLite (TTL = 3600s)
-  • Drill-down detail view of individual records
-  • Dashboard: monthly incident counts for a country or group
-Dependencies:
-  pip install requests rich
-"""
-
 import os
 import sys
 import time
@@ -31,18 +13,17 @@ from rich.prompt import Prompt
 from rich.panel import Panel
 
 # Configuration
-BASE_URL = "https://api.ransomware.live/v2"
-CACHE_PATH = Path.home() / ".ransomware_cache.db"
-CACHE_TTL = 3600  # seconds
-MAX_RETRIES = 5
+BASE_URL      = "https://api.ransomware.live/v2"
+CACHE_PATH    = Path.home() / ".ransomware_cache.db"
+CACHE_TTL     = 3600    # seconds
+MAX_RETRIES   = 5
 BACKOFF_INITIAL = 1
-BACKOFF_MAX = 60
+BACKOFF_MAX     = 60
 
 console = Console()
 
 
 def init_cache():
-    """Initialize SQLite cache."""
     conn = sqlite3.connect(str(CACHE_PATH))
     c = conn.cursor()
     c.execute("""
@@ -60,7 +41,6 @@ cache_conn = init_cache()
 
 
 def get_cached(key):
-    """Retrieve cached value if fresh."""
     c = cache_conn.cursor()
     c.execute("SELECT response, timestamp FROM cache WHERE key = ?", (key,))
     row = c.fetchone()
@@ -72,7 +52,6 @@ def get_cached(key):
 
 
 def set_cache(key, data):
-    """Store response in cache."""
     c = cache_conn.cursor()
     resp_text = json.dumps(data)
     ts = int(time.time())
@@ -87,11 +66,7 @@ def set_cache(key, data):
 
 
 def fetch_endpoint(path: str):
-    """
-    Fetch JSON data from API with caching and rate-limit backoff.
-    """
     key = BASE_URL + path
-    # Check cache
     cached = get_cached(key)
     if cached is not None:
         return cached
@@ -129,8 +104,7 @@ def fetch_endpoint(path: str):
 
 def apply_advanced_filters(data: list) -> list:
     """Apply user-selected advanced filters to victim list."""
-    choice = Prompt.ask("Apply advanced filters? (y/n)", choices=["y", "n"], default="n")
-    if choice != "y":
+    if Prompt.ask("Apply advanced filters? (y/n)", choices=["y", "n"], default="n") != "y":
         return data
 
     filters = []
@@ -140,6 +114,9 @@ def apply_advanced_filters(data: list) -> list:
         filters.append(lambda v: bool(v.get("infostealer")))
     if Prompt.ask("Only records with updates? (y/n)", choices=["y", "n"]) == "y":
         filters.append(lambda v: bool(v.get("updates")))
+    if Prompt.ask("Filter by sector? (y/n)", choices=["y", "n"]) == "y":
+        sector = Prompt.ask("Enter sector name (e.g. Healthcare)").lower()
+        filters.append(lambda v, sec=sector: v.get("sector", "").lower() == sec)
 
     for f in filters:
         data = list(filter(f, data))
@@ -147,19 +124,23 @@ def apply_advanced_filters(data: list) -> list:
 
 
 def display_victims(victims: list):
-    """Show victim table, drill-down detail view, then export option."""
+    """Show victim table with Sector column, drill-down detail view, then export."""
     victims = apply_advanced_filters(victims)
+
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("#", style="dim", width=3)
     table.add_column("Victim", overflow="fold")
     table.add_column("Group")
+    table.add_column("Sector")
     table.add_column("Date")
     table.add_column("Country")
+
     for idx, v in enumerate(victims, 1):
         table.add_row(
             str(idx),
             v.get("victim", ""),
             v.get("group", ""),
+            v.get("sector", "Not informed"),
             v.get("attackdate", ""),
             v.get("country", "")
         )
@@ -173,16 +154,17 @@ def display_victims(victims: list):
         i = int(sel) - 1
         if 0 <= i < len(victims):
             rec = victims[i]
+            # ensure 'sector' key exists
+            rec.setdefault("sector", "Not informed")
             details = Table(show_header=False)
             details.add_column("Field", style="bold")
             details.add_column("Value", overflow="fold")
-            for k, v in rec.items():
-                details.add_row(k, json.dumps(v) if isinstance(v, (dict, list)) else str(v))
+            for k, val in rec.items():
+                details.add_row(k, json.dumps(val) if isinstance(val, (dict, list)) else str(val))
             console.print(Panel(details, title=f"Details for record #{sel}", expand=False))
         else:
             console.print("[red]Invalid record number.[/red]")
 
-    # Export
     _export_option(victims)
 
 
@@ -342,7 +324,9 @@ def main():
         "2": ("List victims by date", victims_by_date),
         "3": ("List victims by country", victims_by_country),
         "4": ("List victims by country and date", victims_by_country_and_date),
-        "5": ("Search victims by group", lambda: display_victims(fetch_endpoint(f"/groupvictims/{Prompt.ask('Enter group name')}") or [])),
+        "5": ("Search victims by group", lambda: display_victims(
+            fetch_endpoint(f"/groupvictims/{Prompt.ask('Enter group name')}") or []
+        )),
         "6": ("List all ransomware groups", list_groups),
         "7": ("Fetch ransomware group details", group_details),
         "8": ("Dashboard (time-series)", dashboard),
